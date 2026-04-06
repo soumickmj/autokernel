@@ -76,3 +76,39 @@ def reduce_sum_ref(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
 def reduce_max_ref(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     """Max reduction."""
     return x.max(dim=dim).values
+
+# 2D Convolution
+def conv2d_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int = 1,
+    padding: int = 0,
+) -> torch.Tensor:
+    """Standard 2D convolution."""
+    return F.conv2d(x, weight, bias, stride=stride, padding=padding)
+
+# 3D Convolution
+def conv3d_ref(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    stride: int = 1,
+    padding: int = 0,
+) -> torch.Tensor:
+    """Standard 3D convolution."""
+    return F.conv3d(x, weight, bias, stride=stride, padding=padding)
+
+# Batch Normalization (2D)
+def batchnorm2d_ref(
+    x: torch.Tensor,
+    running_mean: torch.Tensor | None,
+    running_var: torch.Tensor | None,
+    weight: torch.Tensor | None = None,
+    bias: torch.Tensor | None = None,
+    training: bool = False,
+    momentum: float = 0.1,
+    eps: float = 1e-5,
+) -> torch.Tensor:
+    """Standard 2D batch normalization."""
+    return F.batch_norm(x, running_mean, running_var, weight, bias, training, momentum, eps)
