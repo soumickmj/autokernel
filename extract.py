@@ -46,6 +46,9 @@ SHAPE_KEYS: Dict[str, List[str]] = {
     "rmsnorm":           ["M", "N"],
     "reduce":            ["M", "N"],
     "rotary_embedding":  ["B", "H", "N", "D"],
+    "conv2d":            ["B", "C_in", "H", "W", "C_out", "K"],
+    "conv3d":            ["B", "C_in", "D", "H", "W", "C_out", "K"],
+    "batchnorm2d":       ["B", "C", "H", "W"],
 }
 
 # Aliases: profile_report.json may use different key names than bench.py
@@ -79,6 +82,23 @@ SHAPE_ALIAS_MAP: Dict[str, Dict[str, str]] = {
     "rotary_embedding": {
         "B": "batch", "H": "heads", "N": "seq_len", "S": "seq_len", "D": "head_dim",
         "batch": "batch", "heads": "heads", "seq_len": "seq_len", "head_dim": "head_dim",
+    },
+    "conv2d": {
+        "B": "batch", "C_in": "in_channels", "H": "height", "W": "width",
+        "C_out": "out_channels", "K": "kernel_size",
+        "batch": "batch", "in_channels": "in_channels", "height": "height",
+        "width": "width", "out_channels": "out_channels", "kernel_size": "kernel_size",
+    },
+    "conv3d": {
+        "B": "batch", "C_in": "in_channels", "D": "depth", "H": "height", "W": "width",
+        "C_out": "out_channels", "K": "kernel_size",
+        "batch": "batch", "in_channels": "in_channels", "depth": "depth",
+        "height": "height", "width": "width", "out_channels": "out_channels",
+        "kernel_size": "kernel_size",
+    },
+    "batchnorm2d": {
+        "B": "batch", "C": "channels", "H": "height", "W": "width",
+        "batch": "batch", "channels": "channels", "height": "height", "width": "width",
     },
 }
 
@@ -127,6 +147,21 @@ TOLERANCES_MAP: Dict[str, Dict[str, Dict[str, float]]] = {
         "bfloat16": {"atol": 2e-3, "rtol": 2e-3},
         "float32":  {"atol": 1e-5, "rtol": 1e-5},
     },
+    "conv2d": {
+        "float16":  {"atol": 1e-2, "rtol": 1e-2},
+        "bfloat16": {"atol": 2e-2, "rtol": 2e-2},
+        "float32":  {"atol": 1e-4, "rtol": 1e-4},
+    },
+    "conv3d": {
+        "float16":  {"atol": 1e-2, "rtol": 1e-2},
+        "bfloat16": {"atol": 2e-2, "rtol": 2e-2},
+        "float32":  {"atol": 1e-4, "rtol": 1e-4},
+    },
+    "batchnorm2d": {
+        "float16":  {"atol": 1e-3, "rtol": 1e-3},
+        "bfloat16": {"atol": 2e-3, "rtol": 2e-3},
+        "float32":  {"atol": 1e-5, "rtol": 1e-5},
+    },
 }
 
 # FLOPS formulas as source strings, per op_type
@@ -140,6 +175,9 @@ FLOPS_FN_SRC: Dict[str, str] = {
     "rmsnorm":          'return 6 * s["M"] * s["N"]',
     "reduce":           'return s["M"] * s["N"]',
     "rotary_embedding": 'return 6 * s["batch"] * s["heads"] * s["seq_len"] * s["head_dim"]',
+    "conv2d":           'return 2 * s["batch"] * s["out_channels"] * s["height"] * s["width"] * s["in_channels"] * s["kernel_size"] ** 2',
+    "conv3d":           'return 2 * s["batch"] * s["out_channels"] * s["depth"] * s["height"] * s["width"] * s["in_channels"] * s["kernel_size"] ** 3',
+    "batchnorm2d":      'return 4 * s["batch"] * s["channels"] * s["height"] * s["width"]',
 }
 
 # BYTES formulas as source strings, per op_type (dt_bytes is passed in)
@@ -153,6 +191,9 @@ BYTES_FN_SRC: Dict[str, str] = {
     "rmsnorm":          'return (2 * s["M"] * s["N"] + s["N"]) * dt_bytes',
     "reduce":           'return (s["M"] * s["N"] + s["M"]) * dt_bytes',
     "rotary_embedding": 'return (s["batch"] * s["heads"] * s["seq_len"] * s["head_dim"] * 2 + s["seq_len"] * s["head_dim"]) * dt_bytes',
+    "conv2d":           'return (s["batch"] * s["in_channels"] * s["height"] * s["width"] + s["out_channels"] * s["in_channels"] * s["kernel_size"] ** 2 + s["batch"] * s["out_channels"] * s["height"] * s["width"]) * dt_bytes',
+    "conv3d":           'return (s["batch"] * s["in_channels"] * s["depth"] * s["height"] * s["width"] + s["out_channels"] * s["in_channels"] * s["kernel_size"] ** 3 + s["batch"] * s["out_channels"] * s["depth"] * s["height"] * s["width"]) * dt_bytes',
+    "batchnorm2d":      'return (2 * s["batch"] * s["channels"] * s["height"] * s["width"] + 4 * s["channels"]) * dt_bytes',
 }
 
 # Speedup potential heuristic per op_type
@@ -166,6 +207,9 @@ SPEEDUP_ESTIMATES: Dict[str, str] = {
     "rmsnorm":          "1.5-3x",
     "reduce":           "1.5-2x",
     "rotary_embedding": "1.5-2x",
+    "conv2d":           "1.5-3x",
+    "conv3d":           "1.5-3x",
+    "batchnorm2d":      "1.5-2x",
 }
 
 

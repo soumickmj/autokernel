@@ -44,6 +44,10 @@ WORKSPACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worksp
 _KERNEL_CLASSIFICATION: List[Tuple[List[str], str]] = [
     (["flash", "fmha"],                       "flash_attention"),
     (["attention"],                            "flash_attention"),
+    (["batch_norm", "batchnorm", "cudnn_batch_norm"], "batchnorm2d"),
+    (["conv3d", "conv_3d", "cudnn3d"],         "conv3d"),
+    (["conv2d", "conv_2d", "cudnn_conv"],      "conv2d"),
+    (["conv_transpose"],                       "conv2d"),
     (["gemm", "matmul", "cublas"],             "matmul"),
     (["softmax"],                              "softmax"),
     (["layer_norm", "layernorm"],              "layernorm"),
@@ -340,23 +344,46 @@ def _is_language_model(model: nn.Module) -> bool:
     return False
 
 
+def _is_image_model(model: nn.Module) -> bool:
+    """Heuristic: does the model use convolutional layers (image model)?"""
+    for _name, child in model.named_modules():
+        if isinstance(child, (nn.Conv2d, nn.Conv3d)):
+            return True
+    return False
+
+
+def _is_3d_model(model: nn.Module) -> bool:
+    """Heuristic: does the model use 3D convolutions?"""
+    for _name, child in model.named_modules():
+        if isinstance(child, nn.Conv3d):
+            return True
+    return False
+
+
 def generate_input(
     model: nn.Module,
     input_shape: List[int],
     dtype: torch.dtype,
     device: str,
 ) -> Dict[str, Any]:
-    """Generate appropriate sample input for the model."""
+    """Generate appropriate sample input for the model.
+
+    Automatically detects the model type:
+    - Language models (embedding layer) → integer token IDs
+    - 2D image models (Conv2d) with 4D shape → float image tensor
+    - 3D volumetric models (Conv3d) with 5D shape → float volume tensor
+    - Generic models → float tensor of given shape
+    """
     if _is_language_model(model):
         # Language model: generate integer token IDs
         batch = input_shape[0] if len(input_shape) >= 1 else 1
         seq_len = input_shape[1] if len(input_shape) >= 2 else 512
         input_ids = torch.randint(0, 32000, (batch, seq_len), device=device, dtype=torch.long)
         return {"input_ids": input_ids}
-    else:
-        # Generic model: generate float tensor of given shape
-        x = torch.randn(*input_shape, device=device, dtype=dtype)
-        return {"x": x}
+
+    # Image / volumetric / generic: generate float tensor
+    x = torch.randn(*input_shape, device=device, dtype=dtype)
+    return {"x": x}
 
 
 def _try_forward(
@@ -481,9 +508,9 @@ def estimate_roofline_position(
     gpu: GPUSpec,
 ) -> str:
     """Rough heuristic: is this kernel compute-bound or memory-bound?"""
-    compute_bound_ops = {"matmul", "flash_attention"}
+    compute_bound_ops = {"matmul", "flash_attention", "conv2d", "conv3d"}
     memory_bound_ops = {"softmax", "layernorm", "rmsnorm", "reduce", "rotary_embedding",
-                        "fused_mlp", "cross_entropy"}
+                        "fused_mlp", "cross_entropy", "batchnorm2d"}
 
     if op_type in compute_bound_ops:
         return "compute-bound"

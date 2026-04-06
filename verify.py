@@ -217,13 +217,34 @@ def generate_sample_input(
 
 
 def infer_input_type(model: nn.Module) -> str:
-    """Try to determine if the model expects integer token IDs or float tensors."""
-    # Check if model has an embedding layer as the first module
+    """Try to determine if the model expects integer token IDs or float tensors.
+
+    Returns one of: "token_ids", "image_2d", "image_3d", "float".
+
+    Checks the first child module for a quick heuristic, then falls back to
+    a deeper scan of all modules if no match is found on the first child.
+    """
+    # Quick check: first child module often reveals the model type
     for name, child in model.named_children():
         if isinstance(child, nn.Embedding):
             return "token_ids"
-        if isinstance(child, (nn.Linear, nn.Conv2d)):
+        if isinstance(child, nn.Conv3d):
+            return "image_3d"
+        if isinstance(child, nn.Conv2d):
+            return "image_2d"
+        if isinstance(child, nn.Linear):
             return "float"
+        # First child didn't match a known type; fall through to deeper scan
+        break
+
+    # Deeper scan: check all modules
+    has_conv3d = any(isinstance(m, nn.Conv3d) for m in model.modules())
+    if has_conv3d:
+        return "image_3d"
+    has_conv2d = any(isinstance(m, nn.Conv2d) for m in model.modules())
+    if has_conv2d:
+        return "image_2d"
+
     return "float"
 
 
@@ -233,7 +254,11 @@ def make_model_input(
     dtype: torch.dtype,
     device: str = "cuda",
 ) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
-    """Create an appropriate input for the model."""
+    """Create an appropriate input for the model.
+
+    Handles language models (token IDs), image models (2D/3D float tensors),
+    and generic models (float tensors).
+    """
     input_type = infer_input_type(model)
 
     if input_type == "token_ids":
@@ -247,8 +272,9 @@ def make_model_input(
         if "input_ids" in sig.parameters:
             return {"input_ids": input_ids}
         return input_ids
-    else:
-        return generate_sample_input(input_shape, dtype, device)
+
+    # For image and generic models, generate float tensor of the given shape
+    return generate_sample_input(input_shape, dtype, device)
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +533,84 @@ class _RMSNormWrapper(nn.Module):
         return out
 
 
+class _Conv2dWrapper(nn.Module):
+    """Wraps nn.Conv2d to use an optimized conv2d kernel_fn."""
+
+    def __init__(self, original: nn.Conv2d, kernel_fn: Callable):
+        super().__init__()
+        self.original = original
+        self.kernel_fn = kernel_fn
+        self.weight = original.weight
+        self.bias = original.bias
+        self.stride = original.stride
+        self.padding = original.padding
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        stride = self.stride[0] if isinstance(self.stride, tuple) else self.stride
+        padding = self.padding[0] if isinstance(self.padding, tuple) else self.padding
+        try:
+            out = self.kernel_fn(x, self.weight, self.bias, stride, padding)
+        except TypeError:
+            try:
+                out = self.kernel_fn(x, self.weight, self.bias)
+            except TypeError:
+                out = self.kernel_fn(x, self.weight)
+        return out
+
+
+class _Conv3dWrapper(nn.Module):
+    """Wraps nn.Conv3d to use an optimized conv3d kernel_fn."""
+
+    def __init__(self, original: nn.Conv3d, kernel_fn: Callable):
+        super().__init__()
+        self.original = original
+        self.kernel_fn = kernel_fn
+        self.weight = original.weight
+        self.bias = original.bias
+        self.stride = original.stride
+        self.padding = original.padding
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        stride = self.stride[0] if isinstance(self.stride, tuple) else self.stride
+        padding = self.padding[0] if isinstance(self.padding, tuple) else self.padding
+        try:
+            out = self.kernel_fn(x, self.weight, self.bias, stride, padding)
+        except TypeError:
+            try:
+                out = self.kernel_fn(x, self.weight, self.bias)
+            except TypeError:
+                out = self.kernel_fn(x, self.weight)
+        return out
+
+
+class _BatchNorm2dWrapper(nn.Module):
+    """Wraps nn.BatchNorm2d to use an optimized batchnorm2d kernel_fn."""
+
+    def __init__(self, original: nn.BatchNorm2d, kernel_fn: Callable):
+        super().__init__()
+        self.original = original
+        self.kernel_fn = kernel_fn
+        self.weight = original.weight
+        self.bias = original.bias
+        self.running_mean = original.running_mean
+        self.running_var = original.running_var
+        self.eps = original.eps
+        self.momentum = original.momentum
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        try:
+            out = self.kernel_fn(
+                x, self.running_mean, self.running_var,
+                self.weight, self.bias, False, self.momentum, self.eps,
+            )
+        except TypeError:
+            try:
+                out = self.kernel_fn(x, self.running_mean, self.running_var, self.weight, self.bias)
+            except TypeError:
+                out = self.kernel_fn(x)
+        return out
+
+
 class OptimizedModelContext:
     """
     Context manager that patches a model's submodules to use optimized Triton kernels.
@@ -566,9 +670,15 @@ class OptimizedModelContext:
             count = self._replace_layernorm_modules(repl)
         elif repl.kernel_type == "rmsnorm":
             count = self._replace_rmsnorm_modules(repl)
+        elif repl.kernel_type == "conv2d":
+            count = self._replace_conv2d_modules(repl)
+        elif repl.kernel_type == "conv3d":
+            count = self._replace_conv3d_modules(repl)
+        elif repl.kernel_type == "batchnorm2d":
+            count = self._replace_batchnorm2d_modules(repl)
         else:
             print(f"  NOTE: No replacement strategy for kernel type '{repl.kernel_type}'. "
-                  f"Skipping. (Supported: matmul, layernorm, rmsnorm)")
+                  f"Skipping. (Supported: matmul, layernorm, rmsnorm, conv2d, conv3d, batchnorm2d)")
 
         return count
 
@@ -628,6 +738,51 @@ class OptimizedModelContext:
             if is_rmsnorm:
                 self._original_modules[name] = module
                 wrapper = _RMSNormWrapper(module, repl.module_fn)
+                parts = name.split(".")
+                parent = self.model
+                for p in parts[:-1]:
+                    parent = getattr(parent, p)
+                setattr(parent, parts[-1], wrapper)
+                count += 1
+        return count
+
+    def _replace_conv2d_modules(self, repl: KernelReplacement) -> int:
+        """Replace all nn.Conv2d modules with optimized conv2d wrapper."""
+        count = 0
+        for name, module in list(self.model.named_modules()):
+            if isinstance(module, nn.Conv2d):
+                self._original_modules[name] = module
+                wrapper = _Conv2dWrapper(module, repl.module_fn)
+                parts = name.split(".")
+                parent = self.model
+                for p in parts[:-1]:
+                    parent = getattr(parent, p)
+                setattr(parent, parts[-1], wrapper)
+                count += 1
+        return count
+
+    def _replace_conv3d_modules(self, repl: KernelReplacement) -> int:
+        """Replace all nn.Conv3d modules with optimized conv3d wrapper."""
+        count = 0
+        for name, module in list(self.model.named_modules()):
+            if isinstance(module, nn.Conv3d):
+                self._original_modules[name] = module
+                wrapper = _Conv3dWrapper(module, repl.module_fn)
+                parts = name.split(".")
+                parent = self.model
+                for p in parts[:-1]:
+                    parent = getattr(parent, p)
+                setattr(parent, parts[-1], wrapper)
+                count += 1
+        return count
+
+    def _replace_batchnorm2d_modules(self, repl: KernelReplacement) -> int:
+        """Replace all nn.BatchNorm2d modules with optimized batchnorm2d wrapper."""
+        count = 0
+        for name, module in list(self.model.named_modules()):
+            if isinstance(module, nn.BatchNorm2d):
+                self._original_modules[name] = module
+                wrapper = _BatchNorm2dWrapper(module, repl.module_fn)
                 parts = name.split(".")
                 parent = self.model
                 for p in parts[:-1]:
