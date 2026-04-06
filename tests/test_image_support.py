@@ -268,7 +268,7 @@ def test_model_wrapper_custom_forward_fn():
     model = _DiffusionLike()
 
     def custom_fwd(m, x):
-        t = torch.ones(x.shape[0])
+        t = torch.ones(x.shape[0], device=x.device)
         return m(x, timestep=t)
 
     spec = InputSpec.image_2d(batch=2, channels=3, height=16, width=16)

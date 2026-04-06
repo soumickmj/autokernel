@@ -220,8 +220,11 @@ def infer_input_type(model: nn.Module) -> str:
     """Try to determine if the model expects integer token IDs or float tensors.
 
     Returns one of: "token_ids", "image_2d", "image_3d", "float".
+
+    Checks the first child module for a quick heuristic, then falls back to
+    a deeper scan of all modules if no match is found on the first child.
     """
-    # Check if model has an embedding layer as the first module
+    # Quick check: first child module often reveals the model type
     for name, child in model.named_children():
         if isinstance(child, nn.Embedding):
             return "token_ids"
@@ -231,7 +234,8 @@ def infer_input_type(model: nn.Module) -> str:
             return "image_2d"
         if isinstance(child, nn.Linear):
             return "float"
-        break  # only check first child
+        # First child didn't match a known type; fall through to deeper scan
+        break
 
     # Deeper scan: check all modules
     has_conv3d = any(isinstance(m, nn.Conv3d) for m in model.modules())
@@ -256,10 +260,10 @@ def make_model_input(
     and generic models (float tensors).
     """
     input_type = infer_input_type(model)
-    dims = [int(d.strip()) for d in input_shape.split(",")]
 
     if input_type == "token_ids":
         # Language model: expects integer input_ids
+        dims = [int(d.strip()) for d in input_shape.split(",")]
         torch.manual_seed(42)
         input_ids = torch.randint(0, 32000, dims, device=device, dtype=torch.long)
 
